@@ -61,7 +61,7 @@ func (c *MinerUReader) Read(ctx context.Context, req *types.ReadRequest) (*types
 
 	logger.Infof(context.Background(), "[MinerU] Parsing file=%s size=%d via %s", req.FileName, len(content), c.endpoint)
 
-	mdContent, imagesB64, err := c.callFileParse(ctx, content)
+	mdContent, imagesB64, contentList, err := c.callFileParse(ctx, content)
 	if err != nil {
 		return nil, fmt.Errorf("MinerU file_parse: %w", err)
 	}
@@ -76,29 +76,76 @@ func (c *MinerUReader) Read(ctx context.Context, req *types.ReadRequest) (*types
 
 	mdContent, imageRefs = ensureOriginalImageRef(req, mdContent, imageRefs)
 
-	logger.Infof(context.Background(), "[MinerU] Parsed successfully, markdown=%d chars, images=%d", len(mdContent), len(imageRefs))
+	pageOffsets := buildMinerUPageOffsets(mdContent, contentList)
+
+	logger.Infof(context.Background(), "[MinerU] Parsed successfully, markdown=%d chars, images=%d, page_offsets=%d", len(mdContent), len(imageRefs), len(pageOffsets))
 
 	return &types.ReadResult{
 		MarkdownContent: mdContent,
 		ImageRefs:       imageRefs,
+		PageOffsets:     pageOffsets,
 	}, nil
 }
 
+// mineruContentBlock is one entry of MinerU's `content_list`. We only model
+// the fields needed to map markdown offsets to source pages.
+type mineruContentBlock struct {
+	Type      string `json:"type"`
+	Text      string `json:"text"`
+	TextLevel int    `json:"text_level"`
+	ImgPath   string `json:"img_path"`
+	ImgCap    any    `json:"img_caption"`
+	TableHTML string `json:"table_body"`
+	PageIdx   int    `json:"page_idx"`
+}
+
 // mineruFileParseResponse mirrors the relevant fields from the MinerU API response.
+//
+// `content_list` is typed as json.RawMessage because real MinerU deployments
+// inconsistently serialize it as either a JSON array (`[{...}]`) or a JSON
+// *string* containing an array (`"[{...}]"`). decodeContentList tolerates
+// both — and returns nil on anything else so parsing falls back to no page
+// tracking instead of failing the whole document.
 type mineruFileParseResponse struct {
 	Results struct {
 		Document struct {
-			MDContent string            `json:"md_content"`
-			Images    map[string]string `json:"images"` // path -> "data:image/png;base64,..." or raw base64
+			MDContent   string            `json:"md_content"`
+			Images      map[string]string `json:"images"` // path -> "data:image/png;base64,..." or raw base64
+			ContentList json.RawMessage   `json:"content_list"`
 		} `json:"document"`
 		Files struct {
-			MDContent string            `json:"md_content"`
-			Images    map[string]string `json:"images"` // path -> "data:image/png;base64,..." or raw base64
+			MDContent   string            `json:"md_content"`
+			Images      map[string]string `json:"images"` // path -> "data:image/png;base64,..." or raw base64
+			ContentList json.RawMessage   `json:"content_list"`
 		} `json:"files"`
 	} `json:"results"`
 }
 
-func (c *MinerUReader) callFileParse(ctx context.Context, content []byte) (string, map[string]string, error) {
+// decodeContentList tolerates both JSON-array and JSON-string forms of
+// MinerU's content_list. Returns nil silently if the payload is empty or
+// neither form parses — page tracking is best-effort and must never block
+// document ingestion.
+func decodeContentList(raw json.RawMessage) []mineruContentBlock {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var blocks []mineruContentBlock
+	if err := json.Unmarshal(raw, &blocks); err == nil {
+		return blocks
+	}
+	// Try the stringified form: the array was double-encoded as a JSON
+	// string literal. Unwrap one layer and retry.
+	var inner string
+	if err := json.Unmarshal(raw, &inner); err == nil && inner != "" {
+		if err := json.Unmarshal([]byte(inner), &blocks); err == nil {
+			return blocks
+		}
+	}
+	logger.Warnf(context.Background(), "[MinerU] content_list in unexpected shape (len=%d); skipping page tracking", len(raw))
+	return nil
+}
+
+func (c *MinerUReader) callFileParse(ctx context.Context, content []byte) (string, map[string]string, []mineruContentBlock, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
@@ -133,34 +180,34 @@ func (c *MinerUReader) callFileParse(ctx context.Context, content []byte) (strin
 	// File part
 	part, err := writer.CreateFormFile("files", "document")
 	if err != nil {
-		return "", nil, fmt.Errorf("create form file: %w", err)
+		return "", nil, nil, fmt.Errorf("create form file: %w", err)
 	}
 	if _, err := part.Write(content); err != nil {
-		return "", nil, fmt.Errorf("write file content: %w", err)
+		return "", nil, nil, fmt.Errorf("write file content: %w", err)
 	}
 	writer.Close()
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+"/file_parse", &body)
 	if err != nil {
-		return "", nil, fmt.Errorf("create request: %w", err)
+		return "", nil, nil, fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", writer.FormDataContentType())
 
 	client := &http.Client{Timeout: mineruTimeout}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return "", nil, fmt.Errorf("HTTP request: %w", err)
+		return "", nil, nil, fmt.Errorf("HTTP request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return "", nil, fmt.Errorf("MinerU API status %d: %s", resp.StatusCode, string(respBody))
+		return "", nil, nil, fmt.Errorf("MinerU API status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", nil, fmt.Errorf("read response body: %w", err)
+		return "", nil, nil, fmt.Errorf("read response body: %w", err)
 	}
 
 	// Dump raw response for debugging (truncate if too large)
@@ -179,7 +226,7 @@ func (c *MinerUReader) callFileParse(ctx context.Context, content []byte) (strin
 
 	var result mineruFileParseResponse
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", nil, fmt.Errorf("decode response: %w", err)
+		return "", nil, nil, fmt.Errorf("decode response: %w", err)
 	}
 
 	// MinerU response schema differs by version/deployment:
@@ -188,15 +235,15 @@ func (c *MinerUReader) callFileParse(ctx context.Context, content []byte) (strin
 	// Prefer document when available, then fallback to files.
 	if result.Results.Document.MDContent != "" || len(result.Results.Document.Images) > 0 {
 		logger.Infof(context.Background(), "[MinerU] Using response path: results.document")
-		return result.Results.Document.MDContent, result.Results.Document.Images, nil
+		return result.Results.Document.MDContent, result.Results.Document.Images, decodeContentList(result.Results.Document.ContentList), nil
 	}
 	if result.Results.Files.MDContent != "" || len(result.Results.Files.Images) > 0 {
 		logger.Infof(context.Background(), "[MinerU] Using response path: results.files")
-		return result.Results.Files.MDContent, result.Results.Files.Images, nil
+		return result.Results.Files.MDContent, result.Results.Files.Images, decodeContentList(result.Results.Files.ContentList), nil
 	}
 
 	logger.Errorf(context.Background(), "[MinerU] Response has no markdown/images under results.document or results.files")
-	return "", nil, nil
+	return "", nil, nil, nil
 }
 
 // processImages decodes base64 images from MinerU response and returns ImageRef list.
@@ -349,6 +396,102 @@ func extractImageRefsFromContent(content string) []string {
 	}
 
 	return refs
+}
+
+// buildMinerUPageOffsets walks MinerU's `content_list` (which lists blocks in
+// document order with a `page_idx` per block) and finds where each new page
+// begins inside the parsed markdown. Returns one offset per page transition.
+//
+// We anchor each block by searching forward in mdContent for the first ~80
+// characters of its text (or HTML/image path for non-text blocks). Forward-
+// only scan handles repeated phrases gracefully and runs in O(N+M).
+//
+// Blocks that don't anchor (e.g. mineru rewrites the markdown, or text is
+// purely whitespace) are skipped without aborting — a missed transition just
+// means subsequent chunks may inherit the prior page until the next match,
+// which is much better than reporting "p.0" for everything.
+func buildMinerUPageOffsets(mdContent string, blocks []mineruContentBlock) []types.PageOffset {
+	if mdContent == "" || len(blocks) == 0 {
+		return nil
+	}
+
+	var offsets []types.PageOffset
+	cursor := 0
+	currentPage := -1
+
+	for _, blk := range blocks {
+		anchor := mineruBlockAnchor(blk)
+		if anchor == "" {
+			continue
+		}
+
+		pos := strings.Index(mdContent[cursor:], anchor)
+		if pos < 0 {
+			// Anchor not found from cursor — try from start (handles small
+			// reorderings without losing later transitions). Skip if still
+			// not present anywhere.
+			pos = strings.Index(mdContent, anchor)
+			if pos < 0 {
+				continue
+			}
+		} else {
+			pos += cursor
+		}
+
+		page := blk.PageIdx + 1
+		if page != currentPage {
+			// Record this transition. If we already recorded the same
+			// offset earlier (multiple short blocks at file head), keep
+			// the later page since blocks scan in order.
+			if n := len(offsets); n > 0 && offsets[n-1].Offset == pos {
+				offsets[n-1].Page = page
+			} else {
+				offsets = append(offsets, types.PageOffset{Offset: pos, Page: page})
+			}
+			currentPage = page
+		}
+		cursor = pos + len(anchor)
+	}
+
+	return offsets
+}
+
+// mineruBlockAnchor returns the markdown substring to search for when locating
+// this block inside MinerU's md_content. Keeps it short (≤80 chars) so unicode
+// boundaries don't break Index() and so the search stays cheap.
+func mineruBlockAnchor(blk mineruContentBlock) string {
+	switch blk.Type {
+	case "text", "equation":
+		return trimAnchor(blk.Text)
+	case "image":
+		return trimAnchor(blk.ImgPath)
+	case "table":
+		// Table HTML is large; first 80 chars of <table>...<tr>...<td>... is
+		// usually unique enough within a single document.
+		return trimAnchor(blk.TableHTML)
+	default:
+		if blk.Text != "" {
+			return trimAnchor(blk.Text)
+		}
+	}
+	return ""
+}
+
+func trimAnchor(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	const maxLen = 80
+	if len(s) <= maxLen {
+		return s
+	}
+	// Cut at the last valid rune boundary within maxLen so unicode is intact.
+	cut := maxLen
+	for cut > 0 && (s[cut]&0xC0) == 0x80 {
+		cut--
+	}
+	return s[:cut]
 }
 
 func normalizeMinerUImagePath(p string) string {

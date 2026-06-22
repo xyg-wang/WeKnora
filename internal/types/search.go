@@ -135,6 +135,13 @@ type SearchResult struct {
 
 	// KnowledgeBaseID is the ID of the knowledge base this result belongs to
 	KnowledgeBaseID string `json:"knowledge_base_id,omitempty"`
+
+	// PageNo is the 1-based source page where this chunk begins. 0 means
+	// either the parser did not capture pagination (plain markdown, web)
+	// or this chunk sits before the first detected page. Mirrored to `page`
+	// since downstream clients are inconsistent about which key they read.
+	PageNo int `json:"page_no,omitempty"`
+	Page   int `json:"page,omitempty"`
 }
 
 // SearchParams represents the search parameters

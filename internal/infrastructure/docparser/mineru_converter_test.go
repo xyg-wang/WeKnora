@@ -87,3 +87,107 @@ func TestProcessImagesMatchesPathsWithSpaces(t *testing.T) {
 		t.Fatalf("unexpected OriginalRef: %q", refs[0].OriginalRef)
 	}
 }
+
+func TestBuildMinerUPageOffsets(t *testing.T) {
+	md := "# Title\n\nIntro on page one.\n\n## Section\n\nMore text\nstill on page one.\n\nAlpha bravo charlie on page two." +
+		"\n\nDelta echo foxtrot still on page two.\n\nThe final paragraph appears on page three."
+	blocks := []mineruContentBlock{
+		{Type: "text", Text: "Title", TextLevel: 1, PageIdx: 0},
+		{Type: "text", Text: "Intro on page one.", PageIdx: 0},
+		{Type: "text", Text: "Section", TextLevel: 2, PageIdx: 0},
+		{Type: "text", Text: "More text", PageIdx: 0},
+		{Type: "text", Text: "Alpha bravo charlie on page two.", PageIdx: 1},
+		{Type: "text", Text: "Delta echo foxtrot still on page two.", PageIdx: 1},
+		{Type: "text", Text: "The final paragraph appears on page three.", PageIdx: 2},
+	}
+
+	offsets := buildMinerUPageOffsets(md, blocks)
+	if len(offsets) != 3 {
+		t.Fatalf("expected 3 page transitions, got %d: %+v", len(offsets), offsets)
+	}
+
+	pageForOffset := func(off int) int {
+		page := 0
+		for _, o := range offsets {
+			if o.Offset > off {
+				break
+			}
+			page = o.Page
+		}
+		return page
+	}
+
+	wantP1 := strings.Index(md, "Title")
+	if pageForOffset(wantP1) != 1 {
+		t.Fatalf("offset %d should be page 1, got %d", wantP1, pageForOffset(wantP1))
+	}
+	wantP2 := strings.Index(md, "Alpha bravo charlie")
+	if pageForOffset(wantP2) != 2 {
+		t.Fatalf("offset %d should be page 2, got %d", wantP2, pageForOffset(wantP2))
+	}
+	wantP3 := strings.Index(md, "The final paragraph")
+	if pageForOffset(wantP3) != 3 {
+		t.Fatalf("offset %d should be page 3, got %d", wantP3, pageForOffset(wantP3))
+	}
+}
+
+func TestBuildMinerUPageOffsetsEmpty(t *testing.T) {
+	if offsets := buildMinerUPageOffsets("", nil); offsets != nil {
+		t.Fatalf("expected nil offsets for empty input, got %+v", offsets)
+	}
+	if offsets := buildMinerUPageOffsets("hello", nil); offsets != nil {
+		t.Fatalf("expected nil offsets when no blocks provided, got %+v", offsets)
+	}
+	if offsets := buildMinerUPageOffsets("", []mineruContentBlock{{Type: "text", Text: "x"}}); offsets != nil {
+		t.Fatalf("expected nil offsets when md is empty, got %+v", offsets)
+	}
+}
+
+func TestTrimAnchorBoundary(t *testing.T) {
+	if got := trimAnchor(""); got != "" {
+		t.Fatalf("empty input should produce empty anchor, got %q", got)
+	}
+	if got := trimAnchor("short"); got != "short" {
+		t.Fatalf("short ASCII passes through, got %q", got)
+	}
+	long := strings.Repeat("a", 200)
+	if got := trimAnchor(long); len(got) != 80 {
+		t.Fatalf("anchor should cap at 80 chars, got %d", len(got))
+	}
+}
+
+func TestDecodeContentListAcceptsArray(t *testing.T) {
+	raw := []byte(`[{"type":"text","text":"hi","page_idx":0},{"type":"text","text":"world","page_idx":1}]`)
+	blocks := decodeContentList(raw)
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 blocks, got %d", len(blocks))
+	}
+	if blocks[1].PageIdx != 1 || blocks[1].Text != "world" {
+		t.Fatalf("second block wrong: %+v", blocks[1])
+	}
+}
+
+func TestDecodeContentListAcceptsStringifiedArray(t *testing.T) {
+	// MinerU sometimes double-encodes — the field is a JSON string whose
+	// content is itself a JSON array. The wrapper escapes inner quotes.
+	raw := []byte(`"[{\"type\":\"text\",\"text\":\"hi\",\"page_idx\":0}]"`)
+	blocks := decodeContentList(raw)
+	if len(blocks) != 1 || blocks[0].Text != "hi" {
+		t.Fatalf("stringified form not handled, got %+v", blocks)
+	}
+}
+
+func TestDecodeContentListEmptyAndJunk(t *testing.T) {
+	if blocks := decodeContentList(nil); blocks != nil {
+		t.Fatalf("nil raw should return nil, got %+v", blocks)
+	}
+	if blocks := decodeContentList([]byte(``)); blocks != nil {
+		t.Fatalf("empty raw should return nil, got %+v", blocks)
+	}
+	if blocks := decodeContentList([]byte(`null`)); blocks != nil {
+		t.Fatalf("literal null should return nil, got %+v", blocks)
+	}
+	if blocks := decodeContentList([]byte(`12345`)); blocks != nil {
+		t.Fatalf("non-array non-string should return nil, got %+v", blocks)
+	}
+}

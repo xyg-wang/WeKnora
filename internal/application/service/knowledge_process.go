@@ -27,6 +27,25 @@ import (
 	"github.com/hibiken/asynq"
 )
 
+// pageNoForOffset returns the 1-based source page for a character offset in
+// the parsed markdown using the page boundary list produced by the parser.
+// Returns 0 when the parser did not report any boundaries, or when offset
+// precedes the first recorded transition (e.g. front-matter before page 1).
+//
+// Offsets are assumed sorted ascending. Performs a small linear scan: page
+// counts are bounded by document length in pages (typically ≤ a few hundred),
+// well below a sort/bsearch threshold.
+func pageNoForOffset(offsets []types.PageOffset, offset int) int {
+	page := 0
+	for _, o := range offsets {
+		if o.Offset > offset {
+			break
+		}
+		page = o.Page
+	}
+	return page
+}
+
 func (s *knowledgeService) cloneKnowledge(
 	ctx context.Context,
 	src *types.Knowledge,
@@ -435,6 +454,15 @@ func (s *knowledgeService) processChunks(ctx context.Context,
 			StartAt:         int(chunkData.Start),
 			EndAt:           int(chunkData.End),
 			ChunkType:       types.ChunkTypeText,
+		}
+
+		// Stringified to match the existing Chunk.Metadata convention
+		// (everything in there is map[string]string-shaped). buildSearchResult
+		// parses it back to int.
+		if chunkData.PageNo > 0 {
+			if raw, err := json.Marshal(map[string]string{"page_no": fmt.Sprintf("%d", chunkData.PageNo)}); err == nil {
+				textChunk.Metadata = types.JSON(raw)
+			}
 		}
 
 		// Wire up ParentChunkID for child chunks
@@ -3044,6 +3072,7 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 				Start:         c.Start,
 				End:           c.End,
 				ParentIndex:   c.ParentIndex,
+				PageNo:        pageNoForOffset(convertResult.PageOffsets, c.Start),
 			}
 		}
 		parentChunks := make([]types.ParsedParentChunk, len(pcResult.Parents))
@@ -3063,6 +3092,7 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 				Seq:           c.Seq,
 				Start:         c.Start,
 				End:           c.End,
+				PageNo:        pageNoForOffset(convertResult.PageOffsets, c.Start),
 			}
 		}
 		logger.Infof(ctx, "Split document into %d chunks for knowledge %s", len(chunks), knowledge.ID)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strconv"
 
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/searchutil"
@@ -306,6 +307,7 @@ func (s *knowledgeBaseService) buildSearchResult(chunk *types.Chunk,
 	matchType types.MatchType,
 	matchedContent string,
 ) *types.SearchResult {
+	pageNo := pageNoFromChunkMetadata(chunk.Metadata)
 	return &types.SearchResult{
 		ID:                chunk.ID,
 		Content:           chunk.Content,
@@ -328,7 +330,38 @@ func (s *knowledgeBaseService) buildSearchResult(chunk *types.Chunk,
 		ChunkMetadata:     chunk.Metadata,
 		MatchedContent:    matchedContent,
 		KnowledgeBaseID:   knowledge.KnowledgeBaseID,
+		PageNo:            pageNo,
+		Page:              pageNo,
 	}
+}
+
+// pageNoFromChunkMetadata extracts the page number written by the indexing
+// pipeline (knowledge_process.go writes {"page_no": "N"} as the chunk's
+// Metadata). Returns 0 when absent or malformed so search results without
+// page tracking just fall back to legacy behaviour.
+func pageNoFromChunkMetadata(meta types.JSON) int {
+	if len(meta) == 0 {
+		return 0
+	}
+	var m map[string]any
+	if err := json.Unmarshal(meta, &m); err != nil {
+		return 0
+	}
+	raw, ok := m["page_no"]
+	if !ok {
+		return 0
+	}
+	switch v := raw.(type) {
+	case string:
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	case float64:
+		return int(v)
+	case int:
+		return v
+	}
+	return 0
 }
 
 // isSearchableChunk checks if a chunk type should be included in search results.

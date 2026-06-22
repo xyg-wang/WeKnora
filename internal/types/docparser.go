@@ -24,6 +24,20 @@ type ReadResult struct {
 	Error           string
 	IsAudio         bool   // true when the result contains raw audio data needing ASR transcription
 	AudioData       []byte // raw audio bytes for ASR processing
+	// PageOffsets maps character offsets in MarkdownContent to 1-based page
+	// numbers, sorted by Offset ascending. Populated by parsers that know
+	// source-document pagination (MinerU, PaddleOCR-VL); empty for everything
+	// else. processChunks stamps each chunk's PageNo from this map so the
+	// retrieval API can return chunk-level page info.
+	PageOffsets []PageOffset
+}
+
+// PageOffset associates a character offset in the parsed markdown with a
+// 1-based page number from the source document. The offset marks the
+// position where that page's content begins.
+type PageOffset struct {
+	Offset int
+	Page   int
 }
 
 // ImageRef represents an image reference extracted from the document.
@@ -87,6 +101,10 @@ type ParsedChunk struct {
 	// >= 0 means this is a child chunk referencing the parent at this index
 	// in the ParentChunks slice of ProcessChunksOptions.
 	ParentIndex int
+
+	// PageNo is the 1-based source page where this chunk begins. 0 when the
+	// upstream parser does not expose page information.
+	PageNo int
 }
 
 // EmbeddingContent returns the text that should be sent to the embedding
