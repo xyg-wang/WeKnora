@@ -142,6 +142,10 @@ type SearchResult struct {
 	// since downstream clients are inconsistent about which key they read.
 	PageNo int `json:"page_no,omitempty"`
 	Page   int `json:"page,omitempty"`
+	// PageNos contains every 1-based source page overlapped by this chunk.
+	// It preserves PageNo as a scalar compatibility field while allowing
+	// clients to show cross-page chunks accurately.
+	PageNos []int `json:"page_nos,omitempty"`
 }
 
 // SearchParams represents the search parameters

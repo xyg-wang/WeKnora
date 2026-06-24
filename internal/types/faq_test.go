@@ -1,6 +1,7 @@
 package types
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -33,6 +34,58 @@ func TestCalculateFAQContentHash_NormalizeIsApplied(t *testing.T) {
 	if hashFromNormalized != hashFromSanitized {
 		t.Errorf("Hash mismatch between write and read paths:\n  write (normalized first): %s\n  read  (sanitized only):   %s",
 			hashFromNormalized, hashFromSanitized)
+	}
+}
+
+func TestSetDocumentMetadataPreservesPageMetadata(t *testing.T) {
+	chunk := &Chunk{Metadata: JSON(`{"page_no":"6","page_nos":[6,7],"other":"keep"}`)}
+
+	err := chunk.SetDocumentMetadata(&DocumentChunkMetadata{
+		GeneratedQuestions: []GeneratedQuestion{{ID: "q1", Question: "What changed?"}},
+	})
+	if err != nil {
+		t.Fatalf("SetDocumentMetadata failed: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(chunk.Metadata, &got); err != nil {
+		t.Fatalf("metadata unmarshal failed: %v", err)
+	}
+	if got["page_no"] != "6" {
+		t.Fatalf("page_no = %#v, want %q", got["page_no"], "6")
+	}
+	pageNos, ok := got["page_nos"].([]any)
+	if !ok || len(pageNos) != 2 || int(pageNos[0].(float64)) != 6 || int(pageNos[1].(float64)) != 7 {
+		t.Fatalf("page_nos = %#v, want [6 7]", got["page_nos"])
+	}
+	if got["other"] != "keep" {
+		t.Fatalf("other metadata = %#v, want keep", got["other"])
+	}
+	if _, ok := got["generated_questions"]; !ok {
+		t.Fatalf("generated_questions missing from metadata: %#v", got)
+	}
+}
+
+func TestSetDocumentMetadataCanRemoveGeneratedQuestionsWithoutRemovingPages(t *testing.T) {
+	chunk := &Chunk{Metadata: JSON(`{"page_no":"6","page_nos":[6,7],"generated_questions":[{"id":"q1","question":"old"}]}`)}
+
+	err := chunk.SetDocumentMetadata(&DocumentChunkMetadata{GeneratedQuestions: []GeneratedQuestion{}})
+	if err != nil {
+		t.Fatalf("SetDocumentMetadata failed: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(chunk.Metadata, &got); err != nil {
+		t.Fatalf("metadata unmarshal failed: %v", err)
+	}
+	if _, ok := got["generated_questions"]; ok {
+		t.Fatalf("generated_questions should be removed when set to empty: %#v", got)
+	}
+	if got["page_no"] != "6" {
+		t.Fatalf("page_no = %#v, want %q", got["page_no"], "6")
+	}
+	if _, ok := got["page_nos"]; !ok {
+		t.Fatalf("page_nos missing after metadata update: %#v", got)
 	}
 }
 
@@ -99,7 +152,7 @@ func TestCalculateFAQContentHash_TraditionalSimplifiedInvariant(t *testing.T) {
 		Answers:          []string{"请联系客服"},
 	}
 	meta2 := &FAQChunkMetadata{
-		StandardQuestion: "如何退款", // simplified
+		StandardQuestion: "如何退款",            // simplified
 		Answers:          []string{"請聯繫客服"}, // traditional in answers — answers only sanitize, not normalize
 	}
 

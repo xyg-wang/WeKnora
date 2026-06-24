@@ -46,6 +46,44 @@ func pageNoForOffset(offsets []types.PageOffset, offset int) int {
 	return page
 }
 
+// pageNosForRange returns every 1-based source page overlapped by a chunk's
+// [start, end) range in parsed markdown coordinates. The first element is the
+// page containing start when known, followed by later page transitions inside
+// the chunk.
+func pageNosForRange(offsets []types.PageOffset, start, end int) []int {
+	if len(offsets) == 0 {
+		return nil
+	}
+	if end < start {
+		end = start
+	}
+
+	var pages []int
+	seen := make(map[int]struct{})
+	add := func(page int) {
+		if page <= 0 {
+			return
+		}
+		if _, ok := seen[page]; ok {
+			return
+		}
+		seen[page] = struct{}{}
+		pages = append(pages, page)
+	}
+
+	add(pageNoForOffset(offsets, start))
+	for _, o := range offsets {
+		if o.Offset <= start {
+			continue
+		}
+		if end > start && o.Offset >= end {
+			break
+		}
+		add(o.Page)
+	}
+	return pages
+}
+
 func (s *knowledgeService) cloneKnowledge(
 	ctx context.Context,
 	src *types.Knowledge,
@@ -456,11 +494,21 @@ func (s *knowledgeService) processChunks(ctx context.Context,
 			ChunkType:       types.ChunkTypeText,
 		}
 
-		// Stringified to match the existing Chunk.Metadata convention
-		// (everything in there is map[string]string-shaped). buildSearchResult
-		// parses it back to int.
-		if chunkData.PageNo > 0 {
-			if raw, err := json.Marshal(map[string]string{"page_no": fmt.Sprintf("%d", chunkData.PageNo)}); err == nil {
+		// Keep page_no as the legacy scalar start page and add page_nos for
+		// clients that need every source page overlapped by a cross-page chunk.
+		if chunkData.PageNo > 0 || len(chunkData.PageNos) > 0 {
+			pageNo := chunkData.PageNo
+			if pageNo == 0 && len(chunkData.PageNos) > 0 {
+				pageNo = chunkData.PageNos[0]
+			}
+			pageMetadata := map[string]any{
+				"page_no":  fmt.Sprintf("%d", pageNo),
+				"page_nos": chunkData.PageNos,
+			}
+			if len(chunkData.PageNos) == 0 {
+				pageMetadata["page_nos"] = []int{pageNo}
+			}
+			if raw, err := json.Marshal(pageMetadata); err == nil {
 				textChunk.Metadata = types.JSON(raw)
 			}
 		}
@@ -3073,6 +3121,7 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 				End:           c.End,
 				ParentIndex:   c.ParentIndex,
 				PageNo:        pageNoForOffset(convertResult.PageOffsets, c.Start),
+				PageNos:       pageNosForRange(convertResult.PageOffsets, c.Start, c.End),
 			}
 		}
 		parentChunks := make([]types.ParsedParentChunk, len(pcResult.Parents))
@@ -3093,6 +3142,7 @@ func (s *knowledgeService) ProcessDocument(ctx context.Context, t *asynq.Task) e
 				Start:         c.Start,
 				End:           c.End,
 				PageNo:        pageNoForOffset(convertResult.PageOffsets, c.Start),
+				PageNos:       pageNosForRange(convertResult.PageOffsets, c.Start, c.End),
 			}
 		}
 		logger.Infof(ctx, "Split document into %d chunks for knowledge %s", len(chunks), knowledge.ID)

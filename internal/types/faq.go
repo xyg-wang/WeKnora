@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -71,7 +72,38 @@ func (c *Chunk) SetDocumentMetadata(meta *DocumentChunkMetadata) error {
 		c.Metadata = nil
 		return nil
 	}
-	bytes, err := json.Marshal(meta)
+
+	merged := make(map[string]any)
+	if len(c.Metadata) > 0 {
+		if err := json.Unmarshal(c.Metadata, &merged); err != nil {
+			return err
+		}
+	}
+
+	if meta.GeneratedQuestions != nil {
+		if len(meta.GeneratedQuestions) == 0 {
+			delete(merged, "generated_questions")
+		} else {
+			merged["generated_questions"] = meta.GeneratedQuestions
+		}
+	}
+
+	if _, ok := merged["page_no"]; ok {
+		pageNo, pageNos := PageMetadataFromChunkMetadata(JSON(c.Metadata))
+		if pageNo > 0 {
+			merged["page_no"] = strconv.Itoa(pageNo)
+		}
+		if len(pageNos) > 0 {
+			merged["page_nos"] = pageNos
+		}
+	}
+
+	if len(merged) == 0 {
+		c.Metadata = nil
+		return nil
+	}
+
+	bytes, err := json.Marshal(merged)
 	if err != nil {
 		return err
 	}

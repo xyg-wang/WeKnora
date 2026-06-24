@@ -131,6 +131,15 @@ func buildStreamResponse(evt interfaces.StreamEvent, requestID string) *types.St
 						KnowledgeSource:      getString(refMap, "knowledge_source"),
 						KnowledgeDescription: getString(refMap, "knowledge_description"),
 						KnowledgeBaseID:      getString(refMap, "knowledge_base_id"),
+						PageNo:               int(getFloat64(refMap, "page_no")),
+						Page:                 int(getFloat64(refMap, "page")),
+						PageNos:              getIntSlice(refMap, "page_nos"),
+					}
+					if sr.PageNo == 0 && sr.Page > 0 {
+						sr.PageNo = sr.Page
+					}
+					if sr.Page == 0 && sr.PageNo > 0 {
+						sr.Page = sr.PageNo
 					}
 					searchResults = append(searchResults, sr)
 				}
@@ -340,6 +349,50 @@ func getFloat64(m map[string]interface{}, key string) float64 {
 		return float64(val)
 	}
 	return 0.0
+}
+
+func getIntSlice(m map[string]interface{}, key string) []int {
+	raw, ok := m[key]
+	if !ok {
+		return nil
+	}
+	add := func(out []int, n int) []int {
+		if n <= 0 {
+			return out
+		}
+		for _, existing := range out {
+			if existing == n {
+				return out
+			}
+		}
+		return append(out, n)
+	}
+	switch values := raw.(type) {
+	case []int:
+		out := make([]int, 0, len(values))
+		for _, n := range values {
+			out = add(out, n)
+		}
+		return out
+	case []float64:
+		out := make([]int, 0, len(values))
+		for _, n := range values {
+			out = add(out, int(n))
+		}
+		return out
+	case []interface{}:
+		out := make([]int, 0, len(values))
+		for _, v := range values {
+			switch n := v.(type) {
+			case float64:
+				out = add(out, int(n))
+			case int:
+				out = add(out, n)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // createDefaultSummaryConfig and fillSummaryConfigDefaults used to build

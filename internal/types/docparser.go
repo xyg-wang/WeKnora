@@ -105,6 +105,9 @@ type ParsedChunk struct {
 	// PageNo is the 1-based source page where this chunk begins. 0 when the
 	// upstream parser does not expose page information.
 	PageNo int
+	// PageNos contains every 1-based source page overlapped by this chunk.
+	// Empty when the upstream parser does not expose page information.
+	PageNos []int
 }
 
 // EmbeddingContent returns the text that should be sent to the embedding

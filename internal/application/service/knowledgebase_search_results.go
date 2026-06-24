@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
-	"strconv"
 
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/searchutil"
@@ -307,61 +306,40 @@ func (s *knowledgeBaseService) buildSearchResult(chunk *types.Chunk,
 	matchType types.MatchType,
 	matchedContent string,
 ) *types.SearchResult {
-	pageNo := pageNoFromChunkMetadata(chunk.Metadata)
+	pageNo, pageNos := types.PageMetadataFromChunkMetadata(chunk.Metadata)
 	return &types.SearchResult{
-		ID:                chunk.ID,
-		Content:           chunk.Content,
-		KnowledgeID:       chunk.KnowledgeID,
-		ChunkIndex:        chunk.ChunkIndex,
-		KnowledgeTitle:    knowledge.Title,
-		StartAt:           chunk.StartAt,
-		EndAt:             chunk.EndAt,
-		Seq:               chunk.ChunkIndex,
-		Score:             score,
-		MatchType:         matchType,
-		Metadata:          knowledge.GetMetadata(),
-		ChunkType:         string(chunk.ChunkType),
-		ParentChunkID:     chunk.ParentChunkID,
-		ImageInfo:         chunk.ImageInfo,
+		ID:                   chunk.ID,
+		Content:              chunk.Content,
+		KnowledgeID:          chunk.KnowledgeID,
+		ChunkIndex:           chunk.ChunkIndex,
+		KnowledgeTitle:       knowledge.Title,
+		StartAt:              chunk.StartAt,
+		EndAt:                chunk.EndAt,
+		Seq:                  chunk.ChunkIndex,
+		Score:                score,
+		MatchType:            matchType,
+		Metadata:             knowledge.GetMetadata(),
+		ChunkType:            string(chunk.ChunkType),
+		ParentChunkID:        chunk.ParentChunkID,
+		ImageInfo:            chunk.ImageInfo,
 		KnowledgeFilename:    knowledge.FileName,
 		KnowledgeSource:      knowledge.Source,
 		KnowledgeChannel:     knowledge.Channel,
 		KnowledgeDescription: knowledge.Description,
-		ChunkMetadata:     chunk.Metadata,
-		MatchedContent:    matchedContent,
-		KnowledgeBaseID:   knowledge.KnowledgeBaseID,
-		PageNo:            pageNo,
-		Page:              pageNo,
+		ChunkMetadata:        chunk.Metadata,
+		MatchedContent:       matchedContent,
+		KnowledgeBaseID:      knowledge.KnowledgeBaseID,
+		PageNo:               pageNo,
+		Page:                 pageNo,
+		PageNos:              pageNos,
 	}
 }
 
-// pageNoFromChunkMetadata extracts the page number written by the indexing
-// pipeline (knowledge_process.go writes {"page_no": "N"} as the chunk's
-// Metadata). Returns 0 when absent or malformed so search results without
-// page tracking just fall back to legacy behaviour.
+// pageNoFromChunkMetadata keeps older tests and internal callers pinned to the
+// scalar compatibility field. New code should use types.PageMetadataFromChunkMetadata.
 func pageNoFromChunkMetadata(meta types.JSON) int {
-	if len(meta) == 0 {
-		return 0
-	}
-	var m map[string]any
-	if err := json.Unmarshal(meta, &m); err != nil {
-		return 0
-	}
-	raw, ok := m["page_no"]
-	if !ok {
-		return 0
-	}
-	switch v := raw.(type) {
-	case string:
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	case float64:
-		return int(v)
-	case int:
-		return v
-	}
-	return 0
+	pageNo, _ := types.PageMetadataFromChunkMetadata(meta)
+	return pageNo
 }
 
 // isSearchableChunk checks if a chunk type should be included in search results.

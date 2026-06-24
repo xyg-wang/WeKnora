@@ -586,6 +586,7 @@ func (p *PluginSearch) tryDirectChunkLoading(ctx context.Context, tenantID uint6
 
 	var results []*types.SearchResult
 	for _, chunk := range allChunks {
+		pageNo, pageNos := types.PageMetadataFromChunkMetadata(chunk.Metadata)
 		res := &types.SearchResult{
 			ID:            chunk.ID,
 			Content:       chunk.Content,
@@ -599,6 +600,9 @@ func (p *PluginSearch) tryDirectChunkLoading(ctx context.Context, tenantID uint6
 			ChunkMetadata: chunk.Metadata,
 			StartAt:       chunk.StartAt,
 			EndAt:         chunk.EndAt,
+			PageNo:        pageNo,
+			Page:          pageNo,
+			PageNos:       pageNos,
 		}
 
 		if k, ok := knowledgeMap[chunk.KnowledgeID]; ok {

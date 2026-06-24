@@ -208,6 +208,7 @@ func filterSeenChunk(ctx context.Context, graph *types.GraphData, searchResult [
 
 // chunk2SearchResult converts a chunk to a search result
 func chunk2SearchResult(chunk *types.Chunk, knowledge *types.Knowledge) *types.SearchResult {
+	pageNo, pageNos := types.PageMetadataFromChunkMetadata(chunk.Metadata)
 	return &types.SearchResult{
 		ID:                chunk.ID,
 		Content:           chunk.Content,
@@ -228,5 +229,8 @@ func chunk2SearchResult(chunk *types.Chunk, knowledge *types.Knowledge) *types.S
 		KnowledgeChannel:  knowledge.Channel,
 		ChunkMetadata:     chunk.Metadata,
 		KnowledgeBaseID:   knowledge.KnowledgeBaseID,
+		PageNo:            pageNo,
+		Page:              pageNo,
+		PageNos:           pageNos,
 	}
 }
